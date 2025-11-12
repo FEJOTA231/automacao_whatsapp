@@ -13,6 +13,14 @@ import time
 # Tempo padrão de espera
 DEFAULT_TIMEOUT = 20
 
+def _xpath_literal(s: str) -> str:
+    """Return an XPath literal for the given string, handling quotes safely."""
+    if "'" not in s:
+        return f"'{s}'"
+    if '"' not in s:
+        return f'"{s}"'
+    parts = s.split("'")
+    return "concat(" + ",".join((f"'{p}'" for p in parts[:-1])) + (",'" + parts[-1] + "'") + ")"
 def _start_chrome_with_profile(user_data_dir=None, profile_dir=None, headless=False):
     options = Options()
     # mantém sessão (útil para evitar ter que escanear QR toda vez)
@@ -101,7 +109,7 @@ def step_open_whatsapp(context):
         _find_search_box(context.driver)
     time.sleep(1)  # pequeno delay para estabilizar
 
-@when('eu procurar pelo grupo "voce"')
+@when('eu procurar pelo grupo "{nome}"')
 def step_search_group(context, nome):
     """
     Pesquisa pelo contato/grupo com o nome exato passado no feature.
@@ -116,9 +124,11 @@ def step_search_group(context, nome):
     search_box.send_keys(nome)
     # aguarda aparecer resultado com o título igual ao nome
     try:
-        contato_xpath = f"//span[@title=\"{nome}\"]"
-        elem = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, contato_xpath)))
-        elem.click()
+        xpath_title = f'//span[@title={_xpath_literal(nome)}]'
+        primeiro_resultado = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath_title))
+        )
+        primeiro_resultado.click()
     except Exception as e:
         # tenta alternativa: clicar primeiro resultado da lista
         try:
@@ -126,7 +136,7 @@ def step_search_group(context, nome):
             lista_item.click()
         except:
             raise RuntimeError(f"Não foi possível localizar o contato/grupo '{nome}' no WhatsApp Web. Erro: {e}")
-    time.sleep(0.7)
+    time.sleep(5)
 
 @when('eu enviar a mensagem "{texto}"')
 def step_send_message(context, texto):
@@ -134,12 +144,16 @@ def step_send_message(context, texto):
     msg_box = _find_message_box(driver)
     # escreve mensagem (usa SHIFT+ENTER para novas linhas, ENTER para enviar)
     msg_box.click()
-    # inserir texto com quebra de linha segura
-    for line in texto.split("\n"):
+    # inserir texto com quebras de linha: usa ActionChains para segurar SHIFT
+    from selenium.webdriver import ActionChains
+    lines = texto.split("\n")
+    ac = ActionChains(driver)
+    for i, line in enumerate(lines):
         msg_box.send_keys(line)
-        msg_box.send_keys(Keys.SHIFT, Keys.ENTER)
-    # remove o último SHIFT+ENTER inserido e envia com ENTER
-    msg_box.send_keys(Keys.BACKSPACE)
+        if i != len(lines) - 1:
+            # pressiona SHIFT+ENTER para nova linha
+            ac.move_to_element(msg_box).key_down(Keys.SHIFT).send_keys(Keys.ENTER).key_up(Keys.SHIFT).perform()
+    # envia a mensagem com ENTER
     msg_box.send_keys(Keys.ENTER)
     # guarda último texto enviado para verificação
     context.last_sent_text = texto
@@ -155,10 +169,12 @@ def step_verify_sent(context):
     # tenta verificar se há bolha de saída com o texto exato
     # xpath procura por elementos 'message-out' contendo o texto
     # (o HTML do WhatsApp muda com frequência — usamos contains() como fallback)
+    # criar XPaths seguros para o texto enviado
+    texto_lit = _xpath_literal(texto)
     safe_xpath_variants = [
-        f"//div[contains(@class,'message-out') or contains(@data-testid,'msg-out')]//span[contains(text(), \"{texto}\")]",
-        f"//span[contains(@class,'selectable-text') and contains(text(), \"{texto}\")]",
-        f"//div[contains(@class,'message-out') and .//span[contains(text(), \"{texto}\")]]"
+        f"//div[contains(@class,'message-out') or contains(@data-testid,'msg-out')]//span[contains(text(), {texto_lit})]",
+        f"//span[contains(@class,'selectable-text') and contains(text(), {texto_lit})]",
+        f"//div[contains(@class,'message-out') and .//span[contains(text(), {texto_lit})]]"
     ]
     found = False
     for xp in safe_xpath_variants:
